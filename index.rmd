@@ -1,0 +1,141 @@
+---
+title: "Prediction Assignment"
+author: "Gregory Vial"
+date: "8 June 2016"
+output: html_document
+---
+
+# Executive summary
+The purpose of this study is to build a model that predicts movements performed by individuals equiped with sensors.
+The dataset provided contains information about 6 subjects performing 5 types of movements, and there is a total of 159 variables in the dataset for nearly 20,000 observations.
+
+Our target is to have a 95% accuracy and we will use this target throughout this work.
+
+The approach we follow is the following:
+
+- first run a dimension reduction using principal component analysis in order to work with a smaller dataset. 
+
+- then create a model using random forest on a training set
+
+The model accuracy is then chekced using the testing set, and finally we produce output for our validation set.
+
+Our strategy was successful as PCA leads to reduction of the number of predictors to 30, and the model created has an accuracy higher than 95% on the testing set. It is able to predict correctly 19 out of the 20 outputs of the validation dataset, in line with our 95% target.
+
+# Model construction details
+
+## Environment initilization
+The first part of the code consists in initializing the environment:
+
+- load packages
+- load input files
+- split files into training and testing data sets
+- setup parallel processing to speed up model calculation time
+
+```{r, message=FALSE}
+# Initialize environment
+set.seed(131078)
+library(caret)
+library(RANN)
+
+# Load inputs
+path <- "C:/Users/vialgre/Desktop/DataScience/Machine learning"
+training <- read.csv(paste0(path,"/pml-training.csv"))
+exercise <- read.csv(paste0(path,"/pml-testing.csv"))
+
+# Split train dataset
+inTrain <- createDataPartition(y=training$X,p=0.75,list=F)
+train <- training[inTrain,]
+test <- training[-inTrain,]
+
+# Configure parallel processing
+library(parallel)
+library(doParallel)
+cluster <- makeCluster(detectCores() - 1) # convention to leave 1 core for OS
+registerDoParallel(cluster)
+```
+
+## Variables reduction 
+
+We then perform an initial variables reduction by excluding non relevant variables, factor variables (which wouldn't work with PCA) and columns containing a high number of empty values
+
+
+```{r}
+## Perform variables selection
+## Remove non relevant variables, columns with many NAs and factor variables
+useless <- c(1:7)
+withNAs <- which(apply(is.na(train),2,mean)>0)
+withFactor <- grep("factor",sapply(train,class))
+filter <- union(useless,union(withNAs,withFactor))
+subTrain <- train[,-filter]
+length(subTrain)
+```
+
+A first selection has helped reduce the number of variables to 52. 
+
+We then run PCA on our subset to identify if there is a further opportunity for variable reduction. For PCA to work we will center and scale our data. 
+
+```{r}
+## Run PCA
+princ <- prcomp(subTrain,center=T,scale. = T)
+## Estimate how many variables are required by displaying cumulative proportion of variance explained
+summary(princ)$importance[3,]
+```
+
+The thirty first components account for 97.8% of the variance, which seems to be enough to obtain good prediction quality, so we will restrict our further model building to these 30 variables.
+
+## Model creation
+
+We create model using random forest.
+
+```{r cache=TRUE,message=FALSE}
+## Subset the data to 30 components and run random forest algorithm
+input <- as.data.frame(princ$x[,1:30])
+input$classe <- train$classe
+fit <- train(classe ~ ., method="rf",data=input,verbose=FALSE)
+fit
+```
+
+The best model has training accuracy of 0.967.
+
+## Assessing model accuracy
+
+Let's now run this model of the test set and assess accuracy.
+
+```{r message=FALSE}
+## predict using test dataset
+subTest <- test[,-filter]
+msSubTest <- as.matrix(subTest)
+projectedTest <- as.data.frame(predict(princ,subTest))
+projectedTest$classe <- test$classe
+projectedTest$estimate <- predict(fit,newdata=projectedTest)
+```
+```{r}
+# estimate model performance on test
+confusionMatrix(projectedTest$estimate,test$classe)
+```
+
+The accurary on the test set is still high: above our 95% threshold. 
+
+So we can move on and run the prediction on the validation set with a relatively good confidence that the prediction will be accurate with a 95% probability.
+
+## Prediction
+
+Let's run our model on the validation dataset.
+
+```{r}
+## predict exercise outcome
+subExercise <- exercise[,-filter]
+msSubExercise <- as.matrix(subExercise)
+projectedExercise <- as.data.frame(predict(princ,subExercise))
+projectedExercise$estimate <- predict(fit,newdata=projectedExercise)
+
+## Validate accuracy of our model
+projectedExercise$estimate
+```
+
+As it turns out, when compared to the expected output, all estimation but one (the third one) are correct. This is in line with our expectation of 95% accuracy (19 out of 20 reprensents 95%)
+
+```{r}
+# De-register parallel processing cluster
+stopCluster(cluster)
+```
